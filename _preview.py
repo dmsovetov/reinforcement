@@ -1,13 +1,9 @@
 import gymnasium
 import numpy as np
 import torch
-from stable_baselines3.common.vec_env import DummyVecEnv
-
-from models import SimpleDQN, BasicPositionalEncoding
 from gym.wrappers import TransformObservation
 
-from models import DQNOptions, DQN
-
+from dqn import DQNOptions, DQN
 
 #env_id = 'CartPole-v1'
 env_id = 'LunarLander-v2'

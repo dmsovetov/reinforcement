@@ -1,185 +1,204 @@
-import collections
+import copy
 import random
-from datetime import datetime
+from typing import List
 
 import gymnasium
 import numpy as np
 import torch
-from torch import nn, Tensor
+from gymnasium.wrappers import TransformObservation
+from numpy import ndarray
+from stable_baselines3.common.vec_env import DummyVecEnv
+from torch.nn import Module, HuberLoss
 from torch.optim import Adam
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-# Training parameters
-n_training_episodes = 10000  # Total training episodes
-n_replay_buffer_size = 1_000_000
-n_batch_size = 32
-
-# Environment parameters
-max_steps = 10000
-
-# Exploration parameters
-max_epsilon = 1.0  # Exploration probability at start
-min_epsilon = 0.05  # Minimum exploration probability
-decay_rate = 0.0005  # Exponential decay rate for exploration prob
+from environments import TrainingEnvironment, ExperienceRecorder
+from models import SimpleDQN
 
 
-#gamma = 0.99
+class DQNOptions:
+    def __init__(self,
+                 max_steps: int = 100_000,
+                 batch_size: int = 256,
+                 gamma: float = 0.99,
+                 epsilon_decay: int = 10000,
+                 epochs: int = 1,
+                 learning_rate: float = 5e-4,
+                 replay_buffer_size: int = 50000):
+        self.epsilon_max = 1.0
+        self.epsilon_min = 0.05
+        self.epsilon_decay = epsilon_decay
+        self.max_steps = max_steps
+        self.replay_buffer_size = replay_buffer_size
+        self.batch_size = batch_size
+        self.gamma = gamma
+        self.epochs = epochs
+        self.learning_rate = learning_rate
 
 
-class Agent:
-    def __init__(self, net, device: str = 'cpu'):
-        self.net = net.to(device)
-        self.device = device
-        self.experience = ReplayBuffer(n_replay_buffer_size, device)
+class LinearDecayEpsilon:
+    def __init__(self, min_value: float = 0.05, max_value: float = 1.0, decay: int = 10000):
+        self.min_value = min_value
+        self.max_value = max_value
+        self.decay = decay
+        self.index = 0
 
-    @torch.no_grad()
-    def step(self, env, state, epsilon: float):
-        if random.random() < epsilon:
-            action = env.action_space.sample()
-        else:
-            scores = self.net(torch.from_numpy(state).to(self.device))
-            action = torch.argmax(scores).item()
-
-        next_state, reward, terminated, truncated, info = env.step(action)
-        self.experience.append(state, action, reward, next_state, terminated)
-
-        return next_state, reward, terminated or truncated
+    def __next__(self) -> float:
+        # result = self.min_value + (self.max_value - self.min_value) * math.exp(-self.decay * self.index)
+        result = np.interp(self.index, [0, self.decay], [self.max_value, self.min_value])
+        self.index += 1
+        return float(result)
 
 
-class ReplayBuffer:
-    def __init__(self, capacity: int, device: str = 'cpu'):
-        self.items = collections.deque(maxlen=capacity)
-        self.capacity = capacity
-        self.device = device
-
-    def append(self, state, action, reward, next_state, terminal):
-        self.items.append((
-            torch.from_numpy(state).float(),
-            torch.tensor(action).unsqueeze(-1),
-            torch.tensor(reward).float(),
-            torch.from_numpy(next_state).float(),
-            terminal
-        ))
-
-    def sample(self, batch_size: int):
-        if len(self.items) < batch_size:
-            return None
-
-        items = random.sample(self.items, batch_size)
-
-        states, actions, rewards, next_states, terminals = zip(*items)
-
-        return (torch.stack(states).to(self.device),
-                torch.stack(actions).to(self.device),
-                torch.stack(rewards).to(self.device),
-                torch.stack(next_states).to(self.device),
-                torch.BoolTensor(terminals).to(self.device))
-
-
-class Brain(nn.Module):
-    def __init__(self, in_features: int, out_features: int, hidden: int = 256):
-        super(Brain, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_features, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, out_features)
-        )
-
-    def forward(self, s: Tensor) -> Tensor:
-        return self.net(s)
-
-
-class QLoss(nn.Module):
-    def __init__(self, net, tgt_net, gamma):
-        super(QLoss, self).__init__()
-        self.mse = nn.MSELoss()
+class DQNLoss(Module):
+    def __init__(self, net: Module, target_net: Module, gamma: float, loss=None):
+        super(DQNLoss, self).__init__()
+        self.loss = HuberLoss() if loss is None else loss
         self.net = net
-        self.tgt_net = tgt_net
+        self.target_net = target_net
         self.gamma = gamma
 
-    def forward(self, states, actions, rewards, next_states, terminal):
-        # q_target = self.tgt_net(next_states).detach().max(axis=1)[0].unsqueeze(1)
-        # #y_j = rewards + self.gamma * q_target #* (1 - dones)          # target, if terminal then y_j = rewards
-        # y_j = self.gamma * q_target
-        # y_j[terminal] = 0.0
-        # y_j = rewards.unsqueeze(-1) + y_j
-        # q_eval = self.net(states).gather(1, actions)
-        #
-        # return self.mse(q_eval, y_j)
+    def forward(self, states, actions, rewards, done, next_states):
+        target_q_values = self.target_net(next_states)
+        max_target_q_values = target_q_values.max(-1, keepdim=True)[0]
+        targets = rewards + self.gamma * max_target_q_values * (1.0 - done)
 
-        state_action_values = self.net(states).gather(1, actions).squeeze(-1)
-
-        with torch.no_grad():
-            next_state_values = self.tgt_net(next_states).max(1)[0]
-            next_state_values[terminal] = 0.0
-            next_state_values = next_state_values
-            expected_state_action_values = next_state_values * self.gamma + rewards
-            expected_state_action_values = expected_state_action_values.detach()
-
-        return self.mse(expected_state_action_values, state_action_values)
+        # Compute loss
+        q_values = self.net(states)
+        actions = torch.gather(q_values, dim=1, index=actions)
+        return self.loss(actions, targets)
 
 
-def train(env):
-    net = Brain(env.observation_space.shape[0], env.action_space.n, hidden=256)
-    target_net = Brain(env.observation_space.shape[0], env.action_space.n, hidden=256).cuda()
-    target_net.load_state_dict(net.state_dict())
-    agent = Agent(net, device='cuda')
-    loss = QLoss(net, target_net, 0.99)
+class DQN:
+    def __init__(self, net: Module, options: DQNOptions = DQNOptions(), device: str = 'cpu'):
+        self.net = net.to(device)
+        self.target_net = copy.deepcopy(net).to(device)
+        self.target_net.load_state_dict(net.state_dict())
+        self.options = options
+        self.device = device
 
-    optimizer = Adam(net.parameters(), lr=1e-4)
-    progress = tqdm(range(n_training_episodes), unit="ep")
-    frame_idx = 0
+    def fit(self, env: TrainingEnvironment):
+        decaying_epsilon = LinearDecayEpsilon(self.options.epsilon_min, self.options.epsilon_max,
+                                              int(self.options.epsilon_decay / len(env.unwrapped.envs)))
+        loss = DQNLoss(self.net, self.target_net, self.options.gamma)
+        optimizer = Adam(self.net.parameters(), lr=self.options.learning_rate)
+        progress = tqdm(range(self.options.max_steps))
+        env = ExperienceRecorder(env, self.options.replay_buffer_size)
 
-    now = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
-    writer = SummaryWriter('runs/dqn-' + now)
+        state = env.reset()
+        best_avg_reward = -1000000
 
-    for episode in progress:
-        # Reduce epsilon (because we need less and less exploration)
-        epsilon = min_epsilon + (max_epsilon - min_epsilon) * np.exp(-decay_rate * episode)
+        for step in progress:
+            # Select an action
+            epsilon = next(decaying_epsilon)
+            actions = self.epsilon_greedy_action(env, state, epsilon)
 
-        # Reset the environment
-        state, info = env.reset()
-        loss_total = 0
-        reward_total = 0
-        steps_total = 0
+            # Execute selected action
+            next_state, reward, terminated, infos = env.step(actions)
+            state = next_state
 
-        for step in range(max_steps):
-            # Choose the action At using epsilon greedy policy
-            next_state, reward, terminated = agent.step(env, state, epsilon)
-            reward_total += reward
+            for i in range(self.options.epochs):
+                # Sample next batch of experience
+                batch = env.sample(self.device, self.options.batch_size)
 
-            if terminated:
-                break
+                if batch is None:
+                    break
 
-            batch = agent.experience.sample(n_batch_size)
+                # Compute loss
+                loss_value = loss(batch.states, batch.actions, batch.rewards, batch.done, batch.next_states)
 
-            if batch is None:
-                continue
+                # Update
+                optimizer.zero_grad()
+                loss_value.backward()
+                optimizer.step()
 
-            optimizer.zero_grad()
-            loss_value = loss(*batch)
-            loss_value.backward()
-            optimizer.step()
+            # Update target network
+            if step % 1000 == 0:
+                self.target_net.load_state_dict(self.net.state_dict())
 
-            frame_idx += 1
-            if frame_idx % 1000 == 0:
-                target_net.load_state_dict(net.state_dict())
+            if env.mean_episode_reward:
+                progress.set_description('avg. reward=%2.4f' % env.mean_episode_reward)
 
-            steps_total += 1
-            loss_total += loss_value
+                if env.mean_episode_reward > best_avg_reward:
+                    torch.save(self.net, 'checkpoint.pt')
+                    best_avg_reward = env.mean_episode_reward
 
-        loss_avg = loss_total / steps_total
-        progress.set_description('Epoch #%d: reward=%2.2f, loss=%2.2f, eps=%2.2f' % (episode, reward_total, loss_avg, epsilon))
+    @torch.no_grad()
+    def epsilon_greedy_action(self, env, state: ndarray, epsilon: float) -> List[int]:
+        if random.random() < epsilon:
+            return [env.action_space.sample() for _ in range(state.shape[0])]
 
-        if frame_idx % 10 == 0:
-            writer.add_scalar("reward", reward_total, frame_idx)
-            writer.add_scalar("loss", loss_avg, frame_idx)
-            writer.flush()
+        return self.greedy_action(state)
+
+    @torch.no_grad()
+    def greedy_action(self, state: ndarray) -> List[int]:
+        obs = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+        q_values = self.net(obs)
+        return torch.argmax(q_values, dim=-1).tolist()
+
+    def evaluate(self, env):
+        state, _ = env.reset()
+        episode_reward = 0
+
+        while True:
+            action = self.greedy_action(np.expand_dims(state, 0))
+            state, r, done, truncated, _ = env.step(action[0])
+            env.render()
+            episode_reward += r
+
+            if done or truncated:
+                print('Reward: %2.2f' % episode_reward)
+                episode_reward = 0
+                state, _ = env.reset()
 
 
 if __name__ == '__main__':
-    agent_env = gymnasium.make("LunarLander-v2", render_mode="rgb_array")
-    train(agent_env)
+    max_v = np.array([1.5, 1.5, 5., 5., 3.14, 5., 1., 1.])
+
+
+    def make_env(name):
+        def fn():
+            def normalize_obs(obs: ndarray) -> ndarray:
+                #    return obs / max_v
+                return obs
+
+            result = gymnasium.make(name)
+            return TransformObservation(result, normalize_obs)
+
+        return fn
+
+
+    # test_env = gymnasium.make('LunarLander-v2')
+    # test_env = TransformObservation(test_env, normalize_obs)
+    test_env = DummyVecEnv([make_env('CartPole-v1') for _ in range(2)])
+    test_env = TrainingEnvironment('CartPole-v1', test_env)
+    # test_env = make_env('LunarLander-v2')()
+    obs_n = test_env.observation_space.shape[0]
+    act_n = test_env.action_space.n
+    ops = DQNOptions(max_steps=1_000_000,
+                     batch_size=64,
+                     gamma=0.99,
+                     epsilon_decay=10000,
+                     epochs=1,
+                     # learning_rate=1e-4,
+                     # replay_buffer_size=200_000
+                     )
+    dqn = DQN(SimpleDQN(obs_n, act_n), options=ops, device='cuda')
+    dqn.fit(test_env)
+
+    # net = torch.load('checkpoint.pt')
+    # ops = DQNOptions(max_steps=1_000_000, batch_size=32, gamma=0.99)
+    # dqn = DQN(net, net, options=ops, device='cuda')
+    # dqn.evaluate(gymnasium.make('CartPole-v1', render_mode="human"))
+
+    # test_env = gymnasium.make('CartPole-v1')
+    # obs_n = test_env.observation_space.shape[0]
+    # act_n = test_env.action_space.n
+    # ops = DQNOptions(max_steps=1_000_000, batch_size=32, gamma=0.99)
+    # dqn = DQN(SimpleDQN(obs_n, act_n), SimpleDQN(obs_n, act_n), options=ops, device='cuda')
+    # dqn.fit(test_env)
+
+    # net = torch.load('checkpoint.pt')
+    # ops = DQNOptions(max_steps=1_000_000, batch_size=32, gamma=0.99)
+    # dqn = DQN(net, net, options=ops, device='cuda')
+    # dqn.evaluate(gymnasium.make('CartPole-v1', render_mode="human"))

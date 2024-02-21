@@ -65,17 +65,15 @@ def reinforce(policy, optimizer, n_training_episodes, max_t, gamma, print_every)
     for i_episode in progress:
         saved_log_probs = []
         rewards = []
-        #state, _ = env.reset()
-        state = env.reset()
+        state, _ = env.reset()
+
         # Line 4 of pseudocode
         for t in range(max_t):
             action, log_prob = policy.act(state)
             saved_log_probs.append(log_prob)
-            #state, reward, done, terminated, _ = env.step(action)
-            state, reward, done, _ = env.step(action)
+            state, reward, done, terminated, _ = env.step(action)
             rewards.append(reward)
-            #if done or terminated:
-            if done:
+            if done or terminated:
                 break
         scores_deque.append(sum(rewards))
         scores.append(sum(rewards))
@@ -151,16 +149,14 @@ def evaluate_agent(env, max_steps, n_eval_episodes, policy):
     """
     episode_rewards = []
     for episode in range(n_eval_episodes):
-        #state, _ = env.reset()
-        state = env.reset()
+        state, _ = env.reset()
         step = 0
         done = False
         total_rewards_ep = 0
 
         for step in range(max_steps):
             action, _ = policy.act(state)
-            #new_state, reward, done, truncated, info = env.step(action)
-            new_state, reward, done, info = env.step(action)
+            new_state, reward, done, truncated, info = env.step(action)
             total_rewards_ep += reward
 
             if done:
@@ -185,23 +181,23 @@ cartpole_hyperparameters = {
     "action_space": a_size,
 }
 
-# # Create policy and place it to the device
-# cartpole_policy = Policy(cartpole_hyperparameters["state_space"], cartpole_hyperparameters["action_space"], cartpole_hyperparameters["h_size"]).to(device)
-# cartpole_optimizer = optim.Adam(cartpole_policy.parameters(), lr=cartpole_hyperparameters["lr"])
-#
-# scores = reinforce(cartpole_policy,
-#                    cartpole_optimizer,
-#                    cartpole_hyperparameters["n_training_episodes"],
-#                    cartpole_hyperparameters["max_t"],
-#                    cartpole_hyperparameters["gamma"],
-#                    100)
-#
-# torch.save(cartpole_policy, 'reinforce.pt')
-#
-# mean_reward, std_reward = evaluate_agent(eval_env,
-#                                          cartpole_hyperparameters["max_t"],
-#                                          cartpole_hyperparameters["n_evaluation_episodes"],
-#                                          cartpole_policy)
+# Create policy and place it to the device
+cartpole_policy = Policy(cartpole_hyperparameters["state_space"], cartpole_hyperparameters["action_space"], cartpole_hyperparameters["h_size"]).to(device)
+cartpole_optimizer = optim.Adam(cartpole_policy.parameters(), lr=cartpole_hyperparameters["lr"])
+
+scores = reinforce(cartpole_policy,
+                   cartpole_optimizer,
+                   cartpole_hyperparameters["n_training_episodes"],
+                   cartpole_hyperparameters["max_t"],
+                   cartpole_hyperparameters["gamma"],
+                   100)
+
+torch.save(cartpole_policy, 'reinforce.pt')
+
+mean_reward, std_reward = evaluate_agent(eval_env,
+                                         cartpole_hyperparameters["max_t"],
+                                         cartpole_hyperparameters["n_evaluation_episodes"],
+                                         cartpole_policy)
 #
 # push_to_hub(env_id,
 #             eval_env,
@@ -213,74 +209,74 @@ cartpole_hyperparameters = {
 #             token='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',
 #             video_fps=30)
 
-env_id = "Pixelcopter-PLE-v0"
-env = gym.make(env_id)
-eval_env = gym.make(env_id)
-s_size = env.observation_space.shape[0]
-a_size = env.action_space.n
+# env_id = "Pixelcopter-PLE-v0"
+# env = gym.make(env_id)
+# eval_env = gym.make(env_id)
+# s_size = env.observation_space.shape[0]
+# a_size = env.action_space.n
 
 
-class Policy2(nn.Module):
-    def __init__(self, s_size, a_size, h_size):
-        super(Policy2, self).__init__()
-        self.fc1 = nn.Linear(s_size, h_size)
-        self.fc2 = nn.Linear(h_size, h_size * 2)
-        self.fc3 = nn.Linear(h_size * 2, a_size)
-
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = self.fc3(x)
-        return F.softmax(x, dim=1)
-
-    def act(self, state):
-        state = torch.from_numpy(state).float().unsqueeze(0).to(device)
-        probs = self.forward(state).cpu()
-        m = Categorical(probs)
-        action = m.sample()
-        return action.item(), m.log_prob(action)
-
-pixelcopter_hyperparameters = {
-    "h_size": 64,
-    "n_training_episodes": 5000,
-    "n_evaluation_episodes": 10,
-    "max_t": 10000,
-    "gamma": 0.99,
-    "lr": 1e-4,
-    "env_id": env_id,
-    "state_space": s_size,
-    "action_space": a_size,
-}
-
-# Create policy and place it to the device
-# torch.manual_seed(50)
-pixelcopter_policy = Policy2(pixelcopter_hyperparameters["state_space"], pixelcopter_hyperparameters["action_space"], pixelcopter_hyperparameters["h_size"]).to(device)
-pixelcopter_optimizer = optim.Adam(pixelcopter_policy.parameters(), lr=pixelcopter_hyperparameters["lr"])
-
-pixelcopter_policy = torch.load('pixelcopter.pt')
-
-scores = reinforce(pixelcopter_policy,
-                   pixelcopter_optimizer,
-                   pixelcopter_hyperparameters["n_training_episodes"],
-                   pixelcopter_hyperparameters["max_t"],
-                   pixelcopter_hyperparameters["gamma"],
-                   1000)
-
-torch.save(pixelcopter_policy, 'pixelcopter.pt')
-
-
-
-mean_reward, std_reward = evaluate_agent(eval_env,
-                                         pixelcopter_hyperparameters["max_t"],
-                                         pixelcopter_hyperparameters["n_evaluation_episodes"],
-                                         pixelcopter_policy)
-
-push_to_hub(env_id,
-            eval_env,
-            "dmsovetov/Reinforce-" + env_id,
-            pixelcopter_policy,  # The model we want to save
-            cartpole_hyperparameters,  # Hyperparameters
-            mean_reward,
-            std_reward,
-            token='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',
-            video_fps=30)
+# class Policy2(nn.Module):
+#     def __init__(self, s_size, a_size, h_size):
+#         super(Policy2, self).__init__()
+#         self.fc1 = nn.Linear(s_size, h_size)
+#         self.fc2 = nn.Linear(h_size, h_size * 2)
+#         self.fc3 = nn.Linear(h_size * 2, a_size)
+#
+#     def forward(self, x):
+#         x = F.relu(self.fc1(x))
+#         x = F.relu(self.fc2(x))
+#         x = self.fc3(x)
+#         return F.softmax(x, dim=1)
+#
+#     def act(self, state):
+#         state = torch.from_numpy(state).float().unsqueeze(0).to(device)
+#         probs = self.forward(state).cpu()
+#         m = Categorical(probs)
+#         action = m.sample()
+#         return action.item(), m.log_prob(action)
+#
+# pixelcopter_hyperparameters = {
+#     "h_size": 64,
+#     "n_training_episodes": 5000,
+#     "n_evaluation_episodes": 10,
+#     "max_t": 10000,
+#     "gamma": 0.99,
+#     "lr": 1e-4,
+#     "env_id": env_id,
+#     "state_space": s_size,
+#     "action_space": a_size,
+# }
+#
+# # Create policy and place it to the device
+# # torch.manual_seed(50)
+# pixelcopter_policy = Policy2(pixelcopter_hyperparameters["state_space"], pixelcopter_hyperparameters["action_space"], pixelcopter_hyperparameters["h_size"]).to(device)
+# pixelcopter_optimizer = optim.Adam(pixelcopter_policy.parameters(), lr=pixelcopter_hyperparameters["lr"])
+#
+# pixelcopter_policy = torch.load('pixelcopter.pt')
+#
+# scores = reinforce(pixelcopter_policy,
+#                    pixelcopter_optimizer,
+#                    pixelcopter_hyperparameters["n_training_episodes"],
+#                    pixelcopter_hyperparameters["max_t"],
+#                    pixelcopter_hyperparameters["gamma"],
+#                    1000)
+#
+# torch.save(pixelcopter_policy, 'pixelcopter.pt')
+#
+#
+#
+# mean_reward, std_reward = evaluate_agent(eval_env,
+#                                          pixelcopter_hyperparameters["max_t"],
+#                                          pixelcopter_hyperparameters["n_evaluation_episodes"],
+#                                          pixelcopter_policy)
+#
+# push_to_hub(env_id,
+#             eval_env,
+#             "dmsovetov/Reinforce-" + env_id,
+#             pixelcopter_policy,  # The model we want to save
+#             cartpole_hyperparameters,  # Hyperparameters
+#             mean_reward,
+#             std_reward,
+#             token='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',
+#             video_fps=30)
