@@ -4,14 +4,13 @@ import random
 from datetime import datetime
 from typing import List
 
-import gymnasium
 import numpy as np
 import torch
 from gymnasium.core import ActType
-from stable_baselines3.common.vec_env import DummyVecEnv, VecEnvWrapper, VecMonitor
+from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnvObs, VecEnvStepReturn, VecEnv
+from torch.nn import Module
 from torch.utils.tensorboard import SummaryWriter
-
 
 ExperienceBatch = collections.namedtuple('ExperienceBatch', ['states', 'actions', 'rewards', 'next_states', 'done'])
 
@@ -27,6 +26,7 @@ class TrainingEnvironment(VecEnvWrapper):
         self.step_count = 0
         now = datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
         self.writer = SummaryWriter(os.path.join(log_dir, '%s-%s' % (env_id, now)))
+        self.net = None
 
     @property
     def mean_episode_reward(self):
@@ -47,11 +47,32 @@ class TrainingEnvironment(VecEnvWrapper):
         self.step_count += 1
 
         if self.step_count % self.log_steps == 0:
-            self.writer.add_scalar("rew_mean", self.mean_episode_reward, self.step_count)
-            self.writer.add_scalar("len_mean", self.mean_episode_length, self.step_count)
+            if self.net is not None:
+                grad_max = 0.0
+                grad_means = 0.0
+                grad_count = 0
+                for p in self.net.parameters():
+                    if p.grad is not None:
+                        grad_max = max(grad_max, p.grad.abs().max().item())
+                        grad_means += (p.grad ** 2).mean().sqrt().item()
+                        grad_count += 1
+
+                if grad_count > 0:
+                    self.writer.add_scalar("Gradients/L2", grad_means / grad_count, self.step_count)
+                    self.writer.add_scalar("Gradients/Max", grad_max, self.step_count)
+
+            if self.mean_episode_reward:
+                self.writer.add_scalar("Agent/Reward Mean", self.mean_episode_reward, self.step_count)
+                self.writer.add_scalar("Agent/Length Mean", self.mean_episode_length, self.step_count)
             self.writer.flush()
 
         return next_state, reward, terminated, infos
+
+    def add_scalar(self, name, value):
+        self.writer.add_scalar(name, value, self.step_count)
+
+    def track_gradients(self, net: Module):
+        self.net = net
 
     def step_wait(self) -> VecEnvStepReturn:
         return self.venv.step_wait()
@@ -97,25 +118,3 @@ class ExperienceRecorder(VecEnvWrapper):
             torch.as_tensor(np.asarray(next_states), dtype=torch.float32, device=device),
             torch.as_tensor(np.asarray(done), dtype=torch.float32, device=device).unsqueeze(-1)
         )
-
-
-def make_env(name):
-    def fn():
-        result = gymnasium.make(name)
-        #return Monitor(result, allow_early_resets=True)
-        return result
-
-    return fn
-
-
-def test():
-    test_env = DummyVecEnv([make_env('CartPole-v1') for _ in range(2)])
-    train_env = TrainingEnvironment('test', test_env)
-    train_env.reset()
-
-    while True:
-        next_state, reward, terminated, infos = train_env.step([0, 0])
-
-
-if __name__ == '__main__':
-    test()

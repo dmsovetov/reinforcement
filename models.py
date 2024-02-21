@@ -1,6 +1,8 @@
 import torch
 from torch import Tensor
+from torch.distributions import Categorical
 from torch.nn import Module, Sequential, Linear, ReLU
+import torch.nn.functional as F
 
 
 class BasicPositionalEncoding(Module):
@@ -27,12 +29,12 @@ class SimpleDQN(Module):
     def __init__(self, in_features: int, out_features: int, hidden: int = 64):
         super(SimpleDQN, self).__init__()
 
-        encoder = BasicPositionalEncoding(in_features, 10)
+        #encoder = BasicPositionalEncoding(in_features, 10)
 
         self.net = Sequential(
-            encoder,
-            Linear(encoder.out_features, hidden),
-            #Linear(in_features, hidden),
+            #encoder,
+            #Linear(encoder.out_features, hidden),
+            Linear(in_features, hidden),
             ReLU(),
             Linear(hidden, hidden),
             ReLU(),
@@ -40,4 +42,37 @@ class SimpleDQN(Module):
         )
 
     def forward(self, state: Tensor):
+        return self.net(state)
+
+
+class Policy(Module):
+    def __init__(self, net: Module):
+        super(Policy, self).__init__()
+        self.net = net
+
+    def forward(self, state):
+        logits = self.net(state)
+        probs = F.softmax(logits, dim=1)
+        m = Categorical(probs)
+        action = m.sample()
+        return action.item(), m.log_prob(action), probs
+
+    def logits(self, state):
+        return self.net(state)
+
+
+class MLP(Module):
+    def __init__(self, in_features, out_features, hidden: int = 64, layers: int = 1):
+        super(MLP, self).__init__()
+
+        nodes = []
+
+        for i in range(layers):
+            nodes += [Linear(in_features if i == 0 else hidden, hidden), ReLU()]
+
+        nodes.append(Linear(hidden, out_features))
+
+        self.net = Sequential(*nodes)
+
+    def forward(self, state):
         return self.net(state)

@@ -2,18 +2,14 @@ import copy
 import random
 from typing import List
 
-import gymnasium
 import numpy as np
 import torch
-from gymnasium.wrappers import TransformObservation
 from numpy import ndarray
-from stable_baselines3.common.vec_env import DummyVecEnv
 from torch.nn import Module, HuberLoss
 from torch.optim import Adam
 from tqdm import tqdm
 
 from environments import TrainingEnvironment, ExperienceRecorder
-from models import SimpleDQN
 
 
 class DQNOptions:
@@ -83,6 +79,7 @@ class DQN:
         loss = DQNLoss(self.net, self.target_net, self.options.gamma)
         optimizer = Adam(self.net.parameters(), lr=self.options.learning_rate)
         progress = tqdm(range(self.options.max_steps))
+        env.track_gradients(self.net)
         env = ExperienceRecorder(env, self.options.replay_buffer_size)
 
         state = env.reset()
@@ -150,55 +147,3 @@ class DQN:
                 print('Reward: %2.2f' % episode_reward)
                 episode_reward = 0
                 state, _ = env.reset()
-
-
-if __name__ == '__main__':
-    max_v = np.array([1.5, 1.5, 5., 5., 3.14, 5., 1., 1.])
-
-
-    def make_env(name):
-        def fn():
-            def normalize_obs(obs: ndarray) -> ndarray:
-                #    return obs / max_v
-                return obs
-
-            result = gymnasium.make(name)
-            return TransformObservation(result, normalize_obs)
-
-        return fn
-
-
-    # test_env = gymnasium.make('LunarLander-v2')
-    # test_env = TransformObservation(test_env, normalize_obs)
-    test_env = DummyVecEnv([make_env('CartPole-v1') for _ in range(2)])
-    test_env = TrainingEnvironment('CartPole-v1', test_env)
-    # test_env = make_env('LunarLander-v2')()
-    obs_n = test_env.observation_space.shape[0]
-    act_n = test_env.action_space.n
-    ops = DQNOptions(max_steps=1_000_000,
-                     batch_size=64,
-                     gamma=0.99,
-                     epsilon_decay=10000,
-                     epochs=1,
-                     # learning_rate=1e-4,
-                     # replay_buffer_size=200_000
-                     )
-    dqn = DQN(SimpleDQN(obs_n, act_n), options=ops, device='cuda')
-    dqn.fit(test_env)
-
-    # net = torch.load('checkpoint.pt')
-    # ops = DQNOptions(max_steps=1_000_000, batch_size=32, gamma=0.99)
-    # dqn = DQN(net, net, options=ops, device='cuda')
-    # dqn.evaluate(gymnasium.make('CartPole-v1', render_mode="human"))
-
-    # test_env = gymnasium.make('CartPole-v1')
-    # obs_n = test_env.observation_space.shape[0]
-    # act_n = test_env.action_space.n
-    # ops = DQNOptions(max_steps=1_000_000, batch_size=32, gamma=0.99)
-    # dqn = DQN(SimpleDQN(obs_n, act_n), SimpleDQN(obs_n, act_n), options=ops, device='cuda')
-    # dqn.fit(test_env)
-
-    # net = torch.load('checkpoint.pt')
-    # ops = DQNOptions(max_steps=1_000_000, batch_size=32, gamma=0.99)
-    # dqn = DQN(net, net, options=ops, device='cuda')
-    # dqn.evaluate(gymnasium.make('CartPole-v1', render_mode="human"))
