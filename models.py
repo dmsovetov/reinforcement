@@ -55,7 +55,7 @@ class Policy(Module):
         probs = F.softmax(logits, dim=1)
         m = Categorical(probs)
         action = m.sample()
-        return action.item(), m.log_prob(action), probs
+        return action.tolist(), m.log_prob(action), probs
 
     def logits(self, state):
         return self.net(state)

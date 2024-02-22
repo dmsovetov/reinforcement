@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from numpy import ndarray
 from gymnasium.wrappers import TransformObservation
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from dqn import DQNOptions, DQN
 from environments import TrainingEnvironment
@@ -33,10 +33,10 @@ if __name__ == '__main__':
 
             return gymnasium.make(args.env)
 
-        return DummyVecEnv([fn for _ in range(n)])
+        return SubprocVecEnv([fn for _ in range(n)])
 
     for i in range(3):
-        env = TrainingEnvironment('%s-%s-%d' % (args.env, args.model, args.hidden), make_env(1))
+        env = TrainingEnvironment('%s-%s-%d' % (args.env, args.model, args.hidden), make_env(16))
 
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         obs_n = env.observation_space.shape[0]

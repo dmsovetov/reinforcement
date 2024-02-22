@@ -10,11 +10,11 @@ net = torch.load('reinforce.pt').cpu()
 
 while True:
     action, _, _ = net(torch.as_tensor(state))
-    state, r, done, truncated = env.step([action])
+    state, r, done, truncated = env.step(action)
     env.render()
     episode_reward += r
 
-    if done:
+    if done.all():
         print('Reward: %2.2f' % episode_reward)
         episode_reward = 0
         state = env.reset()

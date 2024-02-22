@@ -29,6 +29,10 @@ class TrainingEnvironment(VecEnvWrapper):
         self.net = None
 
     @property
+    def total_envs(self) -> int:
+        return self.venv.num_envs
+
+    @property
     def mean_episode_reward(self):
         return np.mean([e['r'] for e in self.episode_infos]) if self.episode_infos else None
 
@@ -44,9 +48,9 @@ class TrainingEnvironment(VecEnvWrapper):
                 self.episode_infos.append(info['episode'])
                 self.episode_count += 1
 
-        self.step_count += 1
+        self.step_count += self.total_envs
 
-        if self.step_count % self.log_steps == 0:
+        if self.step_count % self.log_steps == 0 and self.step_count > 0:
             if self.net is not None:
                 grad_max = 0.0
                 grad_means = 0.0
