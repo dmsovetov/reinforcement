@@ -7,12 +7,18 @@ from typing import List
 import numpy as np
 import torch
 from gymnasium.core import ActType
+from gymnasium.spaces import Box, Discrete
+from gymnasium.wrappers import TransformObservation
 from stable_baselines3.common.vec_env import VecEnvWrapper, VecMonitor
 from stable_baselines3.common.vec_env.base_vec_env import VecEnvObs, VecEnvStepReturn, VecEnv
 from torch.nn import Module
 from torch.utils.tensorboard import SummaryWriter
 
 ExperienceBatch = collections.namedtuple('ExperienceBatch', ['states', 'actions', 'rewards', 'next_states', 'done'])
+
+
+def get_possible_actions(env):
+    return [a for a in range(env.action_space.start, env.action_space.start + env.action_space.n)]
 
 
 class TrainingEnvironment(VecEnvWrapper):
@@ -122,3 +128,34 @@ class ExperienceRecorder(VecEnvWrapper):
             torch.as_tensor(np.asarray(next_states), dtype=torch.float32, device=device),
             torch.as_tensor(np.asarray(done), dtype=torch.float32, device=device).unsqueeze(-1)
         )
+
+
+class QuantizationObservationTransformer(TransformObservation):
+    def __init__(self, env, bins: int):
+        super(QuantizationObservationTransformer, self).__init__(env, lambda o: self.quantize(o))
+
+        if isinstance(env.observation_space, Box):
+            box_space = env.observation_space
+        else:
+            raise TypeError("The observation space is not of type Box.")
+
+        self.bins = [
+            np.linspace(low, high, num=bins + 1)[:-1]
+            for low, high in zip(box_space.low, box_space.high)
+        ]
+
+        num_dimensions = env.observation_space.shape[0]
+        self.observation_space = Discrete(bins ** num_dimensions)
+        self.num_bins_per_dimension = bins
+
+    def quantize(self, obs) -> int:
+        discrete_obs = sum(
+            np.digitize(obs[i], self.bins[i]) * (self.num_bins_per_dimension ** i)
+            for i in range(len(obs))
+        )
+        return discrete_obs
+
+    @staticmethod
+    def quantize_value(value: float, quants: int, box_space: Box, index: int) -> int:
+        s = (value - box_space.low[index]) / (box_space.high[index] - box_space.low[index])
+        return round(quants * s)

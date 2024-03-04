@@ -10,6 +10,7 @@ from torch.optim import Adam
 from tqdm import tqdm
 
 from environments import TrainingEnvironment, ExperienceRecorder
+from policies import LinearDecayEpsilon
 
 
 class DQNOptions:
@@ -30,20 +31,6 @@ class DQNOptions:
         self.gamma = gamma
         self.epochs = epochs
         self.learning_rate = learning_rate
-
-
-class LinearDecayEpsilon:
-    def __init__(self, min_value: float = 0.05, max_value: float = 1.0, decay: int = 10000):
-        self.min_value = min_value
-        self.max_value = max_value
-        self.decay = decay
-        self.index = 0
-
-    def __next__(self) -> float:
-        # result = self.min_value + (self.max_value - self.min_value) * math.exp(-self.decay * self.index)
-        result = np.interp(self.index, [0, self.decay], [self.max_value, self.min_value])
-        self.index += 1
-        return float(result)
 
 
 class DQNLoss(Module):
