@@ -1,59 +1,66 @@
 import argparse
 
-import gymnasium
 import numpy as np
-import torch
-from numpy import ndarray
-from gymnasium.wrappers import TransformObservation
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from torch.nn import Tanh
 
+import actorcritic
+import models
+from actorcritic import ActorCritic
 from dqn import DQNOptions, DQN
-from environments import TrainingEnvironment
-from models import Policy, MLP, SimpleDQN
+from environments import TrainingEnvironment, make_env
+from models import Policy, SimpleDQN, AC, MLP
 from reinforce import Reinforce
 
-if __name__ == '__main__':
+
+def benchmark(args):
+    env = TrainingEnvironment('%s-%s-%d' % (args.env, args.model, args.hidden), make_env(args.env, args.envs), log_dir='runs')
+
+    obs_n = env.observation_space.shape[0]
+    act_n = env.action_space.n
+
+    if args.model == 'reinforce':
+        policy = Policy(MLP(obs_n, act_n, hidden=[args.hidden], activation=Tanh))
+        models.initialize_ortho({policy.net: np.sqrt(2)})
+        r = Reinforce(policy,
+                      gamma=args.gamma,
+                      n_training_episodes=15000,
+                      learning_rate=7e-4,
+                      n_max_episode_steps=1_000_000,
+                      device='cuda')
+        r.fit(env)
+    if args.model == 'ac':
+        policy = AC(obs_n, act_n, hidden=[args.hidden, args.hidden])
+        ac = ActorCritic(policy,
+                         n_training_steps=8_000_000,
+                         device='cuda',
+                         normalize_advantage=False,
+                         n_steps=100,
+                         ent_coef=1e-05,
+                         clip=0.5,
+                         learning_rate=7e-4,
+                         gamma=args.gamma)
+        ac.fit(env)
+    if args.model == 'dqn':
+        ops = DQNOptions(max_steps=100_000,
+                         batch_size=64,
+                         gamma=args.gamma,
+                         epsilon_decay=10000,
+                         epochs=1,
+                         # learning_rate=1e-4,
+                         replay_buffer_size=500_000
+                         )
+        dqn = DQN(SimpleDQN(obs_n, act_n, hidden=args.hidden), options=ops, device='cuda')
+        dqn.fit(env)
+
+
+def main():
     parser = argparse.ArgumentParser(prog='benchmark')
 
-    parser.add_argument('env', type=str, choices=['CartPole-v1', 'LunarLander-v2'])
-    parser.add_argument('model', type=str, choices=['reinforce', 'dqn'])
-    parser.add_argument('--gamma', type=float, default=1.0)
-    parser.add_argument('--hidden', type=int, default=16)
+    subparsers = parser.add_subparsers(required=True)
+    actorcritic.command_line(subparsers)
     args = parser.parse_args()
+    args.func(args)
 
-    def make_env(n: int):
-        max_v = np.array([1.5, 1.5, 5., 5., 3.14, 5., 1., 1.])
 
-        def normalize_obs(obs: ndarray) -> ndarray:
-            return obs / max_v
-
-        def fn():
-            if args.env == 'LunarLander-v2':
-                return TransformObservation(gymnasium.make(args.env), normalize_obs)
-
-            return gymnasium.make(args.env)
-
-        return SubprocVecEnv([fn for _ in range(n)])
-
-    for i in range(3):
-        env = TrainingEnvironment('%s-%s-%d' % (args.env, args.model, args.hidden), make_env(16))
-
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        obs_n = env.observation_space.shape[0]
-        act_n = env.action_space.n
-
-        if args.model == 'reinforce':
-            policy = Policy(MLP(obs_n, act_n, hidden=args.hidden, layers=2))
-            r = Reinforce(policy, gamma=args.gamma, n_training_episodes=4000, n_max_episode_steps=1_000_000, device='cuda')
-            r.fit(env)
-        if args.model == 'dqn':
-            ops = DQNOptions(max_steps=100_000,
-                             batch_size=64,
-                             gamma=args.gamma,
-                             epsilon_decay=10000,
-                             epochs=1,
-                             # learning_rate=1e-4,
-                             replay_buffer_size=500_000
-                             )
-            dqn = DQN(SimpleDQN(obs_n, act_n, hidden=args.hidden), options=ops, device='cuda')
-            dqn.fit(env)
+if __name__ == '__main__':
+    main()

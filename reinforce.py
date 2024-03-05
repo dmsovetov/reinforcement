@@ -3,7 +3,7 @@ import copy
 import numpy as np
 import torch
 from torch.nn import Module
-from torch.optim import Adam
+from torch.optim import Adam, RMSprop
 from tqdm import tqdm
 
 from environments import TrainingEnvironment
@@ -17,6 +17,7 @@ class Reinforce:
             n_max_episode_steps: int = 1000,
             gamma: float = 1.0,
             learning_rate: float = 1e-3,
+            clip: float = None,
             device: str = 'cpu'
     ):
         self.net = net.to(device)
@@ -25,10 +26,12 @@ class Reinforce:
         self.n_max_episode_steps = n_max_episode_steps
         self.learning_rate = learning_rate
         self.device = device
+        self.clip = clip
 
     def fit(self, env: TrainingEnvironment):
         progress = tqdm(range(self.n_training_episodes))
-        optimizer = Adam(self.net.parameters(), lr=self.learning_rate)
+        #optimizer = Adam(self.net.parameters(), lr=self.learning_rate)
+        optimizer = RMSprop(self.net.parameters(), lr=self.learning_rate, eps=1e-5, alpha=0.99)
         env.track_gradients(self.net)
 
         best_avg_reward = -1000000
@@ -51,7 +54,8 @@ class Reinforce:
 
             optimizer.zero_grad()
             loss.backward()
-            #torch.nn.utils.clip_grad_norm_(self.net.parameters(), 1.0)
+            if self.clip:
+                torch.nn.utils.clip_grad_norm_(self.net.parameters(), max_norm=self.clip)
             optimizer.step()
 
             # Calculate KL
@@ -61,7 +65,7 @@ class Reinforce:
             #env.add_scalar("Policy/KL", kl_div_v.item())
             #env.add_scalar('Policy/Entropy', entropy.item())
 
-            progress.set_description('reward=%2.2f' % (np.mean(env.mean_episode_reward)))
+            progress.set_description('reward=%2.2f' % env.mean_episode_reward)
 
             # Save model
             if env.mean_episode_reward > best_avg_reward:
